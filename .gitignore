@@ -1,0 +1,8 @@
+__pycache__/
+demo_data/
+demo_data_test/
+demo_model.joblib
+demo_cnn.pt
+*.zip
+# Sensor Logger metadata includes the device ID
+**/Metadata.csv
