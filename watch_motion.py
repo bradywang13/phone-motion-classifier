@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
+from sklearn.model_selection import StratifiedGroupKFold
 
 # ================= WHAT TO RUN (edit these, save, then press Run) =================
 MODE = "predict"          # "demo", "plot", "train" or "predict"
@@ -48,6 +48,9 @@ STEP_SECONDS = 1.0     # how far the window slides each time (50% overlap with a
 TRIM_SECONDS = 3.0     # cut off start/end of each TRAINING recording (pocketing/unpocketing the phone)
 MODEL_PATH = Path("motion_model.joblib")      # your real model
 DEMO_MODEL_PATH = Path("demo_model.joblib")  # the demo saves here, so it never overwrites yours
+# Extra recordings added to TRAINING only (accuracy is still measured on your own data).
+# Create "motionsense" with: python import_motionsense.py.  Set to [] to train on your data alone.
+EXTRA_FOLDERS = ["motionsense"]
 
 
 # ---------------- 1. Loading ----------------
@@ -192,7 +195,7 @@ def find_recordings(label_dir):
             or p.suffix.lower() == ".csv"]
 
 
-def build_dataset(data_dir):
+def build_dataset(data_dir, quiet=False):
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
         sys.exit(f"Folder '{data_dir}' not found. Run this from your project folder.")
@@ -210,29 +213,59 @@ def build_dataset(data_dir):
             w["label"] = label_dir.name
             w["recording"] = str(rec)
             frames.append(w)
-            print(f"  {label_dir.name:<12} {rec.name:<28} {len(w):>4} windows")
+            if not quiet:
+                print(f"  {label_dir.name:<12} {rec.name:<28} {len(w):>4} windows")
     if not frames:
         sys.exit(f"No recordings found. Expected {data_dir}/<movement>/<recording>")
-    return pd.concat(frames, ignore_index=True)
+    data = pd.concat(frames, ignore_index=True)
+    if quiet:
+        print(data.groupby("label")["recording"].agg(["nunique", "size"])
+              .rename(columns={"nunique": "recordings", "size": "windows"}).to_string())
+    return data
 
 
-def train(data_dir, model_path=MODEL_PATH):
+def load_extra(extra_dirs, labels):
+    """Extra training recordings, limited to the movements in your own data."""
+    frames = []
+    for d in extra_dirs:
+        if not Path(d).is_dir():
+            print(f"\n(No '{d}' folder - run import_motionsense.py to add it. Continuing without.)")
+            continue
+        print(f"\nLoading extra training data from {d}/ ...")
+        frames.append(build_dataset(d, quiet=True))
+    if not frames:
+        return None
+    extra = pd.concat(frames, ignore_index=True)
+    return extra[extra["label"].isin(labels)]
+
+
+def train(data_dir, model_path=MODEL_PATH, extra_dirs=EXTRA_FOLDERS):
     print(f"Loading {data_dir}/ ...")
     data = build_dataset(data_dir)
     X = data.drop(columns=["label", "recording", "t_start"])
     y = data["label"]
     groups = data["recording"]
+    extra = load_extra(extra_dirs, set(y))
+    X_extra = extra[X.columns] if extra is not None else X.iloc[:0]
+    y_extra = extra["label"] if extra is not None else y.iloc[:0]
 
     model = RandomForestClassifier(n_estimators=300, random_state=0, n_jobs=-1)
 
     # Honest accuracy: test on whole recordings the model never trained on.
     # (Random windows would leak, because neighbouring windows overlap.)
-    n_splits = int(min(5, data.groupby("label")["recording"].nunique().min()))
+    # Every movement needs a training recording in each fold. With extra data that's
+    # covered, so even a movement you recorded only once can be tested.
+    per_label = data.groupby("label")["recording"].nunique()
+    n_splits = int(min(5, per_label.max() if extra is not None else per_label.min()))
     if y.nunique() < 2:
         sys.exit("Need at least 2 movements (2 subfolders) to train.")
     if n_splits >= 2:
         cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=0)
-        preds = cross_val_predict(model, X, y, groups=groups, cv=cv)
+        preds = np.empty(len(y), dtype=object)
+        for train_idx, test_idx in cv.split(X, y, groups):
+            model.fit(pd.concat([X.iloc[train_idx], X_extra]),
+                      pd.concat([y.iloc[train_idx], y_extra]))
+            preds[test_idx] = model.predict(X.iloc[test_idx])
         labels = sorted(y.unique())
         print("\n=== Accuracy on recordings the model never saw ===")
         print(classification_report(y, preds, zero_division=0))
@@ -242,9 +275,10 @@ def train(data_dir, model_path=MODEL_PATH):
     else:
         print("\nNeed 2+ recordings per movement to measure accuracy. Skipping that step.")
 
-    model.fit(X, y)
+    model.fit(pd.concat([X, X_extra]), pd.concat([y, y_extra]))
+    trained_on = " + ".join([str(data_dir)] + ([str(d) for d in extra_dirs] if extra is not None else []))
     joblib.dump({"model": model, "columns": list(X.columns),
-                 "labels": sorted(y.unique()), "trained_on": str(data_dir)}, model_path)
+                 "labels": sorted(y.unique()), "trained_on": trained_on}, model_path)
     print(f"\nSaved model to {model_path}")
 
     top = pd.Series(model.feature_importances_, index=X.columns).nlargest(10)
@@ -360,7 +394,7 @@ def main():
 
     if cmd == "demo":
         make_demo_data()
-        train("demo_data", DEMO_MODEL_PATH)
+        train("demo_data", DEMO_MODEL_PATH, extra_dirs=[])
         predict("demo_data_test/mixed", DEMO_MODEL_PATH)
     elif cmd == "train":
         train(target or DATA_FOLDER)

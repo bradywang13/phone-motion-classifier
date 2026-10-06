@@ -4,13 +4,14 @@ Recognise what you're doing (walking, running, standing still, ...) from an
 iPhone's accelerometer and gyroscope, recorded with the
 [Sensor Logger](https://www.tszheichoi.com/sensorlogger) app.
 
-Three scripts:
+Four scripts:
 
 | Script | What it does |
 | --- | --- |
 | `watch_motion.py` | Random forest on hand-picked features (mean, std, dominant frequency, ...) of 2-second windows. Also plots recordings. |
 | `motion_cnn.py` | 1D convolutional neural network that learns straight from the raw 2-second signal. |
 | `live_motion.py` | Streams data from the phone over WiFi and classifies it in real time with either model. |
+| `import_motionsense.py` | Downloads the MotionSense dataset and converts it into extra training recordings. |
 
 ## Setup
 
@@ -44,6 +45,25 @@ data/
 
 The first and last 3 seconds of each training recording are trimmed off
 (putting the phone in and out of your pocket).
+
+## Add the MotionSense dataset (recommended)
+
+[MotionSense](https://github.com/mmalekzadeh/motion-sense) is 24 people with an
+iPhone in their front pocket, recorded with the same iOS motion API Sensor Logger
+uses. Download and convert it once:
+
+```
+python import_motionsense.py     # writes motionsense/Walking, Running, Still
+```
+
+Its walking, jogging, sitting and standing trials become Walking, Running and
+Still; stairs are left out. Acceleration is converted from g to m/s² to match
+Sensor Logger.
+
+Both trainers then add it as **extra training data** (`EXTRA_FOLDERS` in
+`watch_motion.py`; set it to `[]` to train on your recordings alone). Accuracy is
+still measured only on your own recordings, so you see how well it works on
+*your* phone. A movement you recorded only once can now be tested too.
 
 ## Train and predict
 

@@ -6,3 +6,4 @@ demo_cnn.pt
 *.zip
 # Sensor Logger metadata includes the device ID
 **/Metadata.csv
+motionsense/

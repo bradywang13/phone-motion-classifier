@@ -34,13 +34,15 @@ RECORDING = "test/2026-10-03_22-09-37"   # used by "predict"
 FS = 50                # every recording is resampled to 50 samples per second
 WINDOW_SECONDS = 2.0   # length of each chunk the network looks at
 STEP_SECONDS = 0.5     # windows overlap more than in watch_motion -> more examples
-EPOCHS = 40            # how many passes over the training data
+EPOCHS = 15            # how many passes over the training data
 BATCH_SIZE = 64        # windows per training step
 LEARNING_RATE = 1e-3   # how big each learning step is
 TEST_FRACTION = 0.25   # share of each movement's recordings held back for testing
 CHANNELS = ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z", "acc_mag", "gyro_mag"]
 MODEL_PATH = Path("motion_cnn.pt")
 DEMO_MODEL_PATH = Path("demo_cnn.pt")
+EXTRA_FOLDERS = wm.EXTRA_FOLDERS   # extra TRAINING data, set in watch_motion.py ([] = your data only)
+EXTRA_MAX_WINDOWS = 60             # per extra recording: plenty of variety, much faster training
 
 
 # ---------------- 1. Raw windows ----------------
@@ -65,7 +67,7 @@ def recording_to_raw_windows(path, trim):
     return windows, t_even[starts]
 
 
-def build_dataset(data_dir):
+def build_dataset(data_dir, quiet=False, max_windows=None):
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
         sys.exit(f"Folder '{data_dir}' not found.")
@@ -74,6 +76,8 @@ def build_dataset(data_dir):
         for rec in wm.find_recordings(label_dir):
             try:
                 w, _ = recording_to_raw_windows(rec, wm.TRIM_SECONDS)
+                if max_windows and len(w) > max_windows:   # evenly spaced subset
+                    w = w[np.linspace(0, len(w) - 1, max_windows).astype(int)]
             except ValueError as e:
                 print(f"  skipped {rec.name}: {e}")
                 continue
@@ -83,7 +87,8 @@ def build_dataset(data_dir):
             X.append(w)
             y += [label_dir.name] * len(w)
             groups += [str(rec)] * len(w)
-            print(f"  {label_dir.name:<12} {rec.name:<28} {len(w):>4} windows")
+            if not quiet:
+                print(f"  {label_dir.name:<12} {rec.name:<28} {len(w):>4} windows")
     if not X:
         sys.exit(f"No recordings found in {data_dir}/<movement>/")
     return np.concatenate(X), np.array(y), np.array(groups)
@@ -157,20 +162,35 @@ def predict_idx(model, X, return_conf=False):
 
 
 # ---------------- 3. Train ----------------
-def train(data_dir, model_path=MODEL_PATH):
+def train(data_dir, model_path=MODEL_PATH, extra_dirs=EXTRA_FOLDERS):
     print(f"Loading {data_dir}/ ...")
     X, y, groups = build_dataset(data_dir)
     labels = sorted(str(v) for v in set(y))   # plain strings so the file loads safely
     if len(labels) < 2:
         sys.exit("Need at least 2 movements to train.")
+    own_recs = set(groups)
+
+    # Extra recordings only ever go into training, never into the test
+    used_extra = []
+    for d in extra_dirs:
+        if not Path(d).is_dir():
+            print(f"\n(No '{d}' folder - run import_motionsense.py to add it. Continuing without.)")
+            continue
+        print(f"\nLoading extra training data from {d}/ ...")
+        Xe, ye, ge = build_dataset(d, quiet=True, max_windows=EXTRA_MAX_WINDOWS)
+        keep = np.isin(ye, labels)
+        X, y, groups = np.concatenate([X, Xe[keep]]), np.concatenate([y, ye[keep]]), np.concatenate([groups, ge[keep]])
+        print(f"  {len(set(ge[keep]))} recordings, {keep.sum()} windows")
+        used_extra.append(str(d))
     y_idx = np.array([labels.index(v) for v in y])
 
-    # Hold back whole recordings for an honest test (same idea as watch_motion.py)
+    # Hold back whole recordings of YOURS for an honest test (same idea as watch_motion.py).
+    # With extra data, a movement you recorded only once can still be tested.
     rng = np.random.default_rng(0)
     test_recs = []
     for label in labels:
-        recs = sorted(set(groups[y == label]))
-        if len(recs) >= 2:
+        recs = sorted(r for r in set(groups[y == label]) if r in own_recs)
+        if len(recs) >= 2 or (used_extra and recs):
             n_test = max(1, round(TEST_FRACTION * len(recs)))
             test_recs += list(rng.choice(recs, n_test, replace=False))
     is_test = np.isin(groups, test_recs)
@@ -201,7 +221,7 @@ def train(data_dir, model_path=MODEL_PATH):
     model = fit(Xn, y_idx, len(labels))
     torch.save({"state": model.state_dict(), "labels": labels,
                 "mean": mean.tolist(), "std": std.tolist(),
-                "trained_on": str(data_dir)}, model_path)
+                "trained_on": " + ".join([str(data_dir)] + used_extra)}, model_path)
     print(f"Saved network to {model_path}")
 
 
@@ -248,7 +268,7 @@ def main():
     target = sys.argv[2] if len(sys.argv) > 2 else None
     if cmd == "demo":
         wm.make_demo_data()
-        train("demo_data", DEMO_MODEL_PATH)
+        train("demo_data", DEMO_MODEL_PATH, extra_dirs=[])
         predict("demo_data_test/mixed", DEMO_MODEL_PATH)
     elif cmd == "train":
         train(target or DATA_FOLDER)
