@@ -7,7 +7,8 @@ with the same iOS motion API Sensor Logger uses (gravity already removed).
 https://github.com/mmalekzadeh/motion-sense
 
 Run once:  python import_motionsense.py
-Result:    motionsense/<Movement>/<trial>_sub<N>.csv   (same labels as your data/ folder)
+Result:    motionsense/<Movement>/<trial>_sub_<N>/Accelerometer.csv + Gyroscope.csv
+           (same layout as a Sensor Logger export, same labels as your data/ folder)
 
 The trainers then use these as EXTRA training data (see EXTRA_FOLDERS in each
 script). Accuracy is still measured only on your own recordings.
@@ -47,19 +48,19 @@ def main():
         if label is None:
             continue
         df = pd.read_csv(archive.open(name))
-        out = pd.DataFrame({"seconds_elapsed": df.index / FS})
-        for axis in "xyz":
-            out[f"acc_{axis}"] = df[f"userAcceleration.{axis}"] * G
-        for axis in "xyz":
-            out[f"gyro_{axis}"] = df[f"rotationRate.{axis}"]
-        path = OUT / label / f"{trial}_{sub}.csv"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        out.to_csv(path, index=False)
+        folder = OUT / label / f"{trial}_{sub}"
+        folder.mkdir(parents=True, exist_ok=True)
+        for file, column, scale in [("Accelerometer.csv", "userAcceleration", G),
+                                    ("Gyroscope.csv", "rotationRate", 1)]:
+            out = pd.DataFrame({"seconds_elapsed": df.index / FS})
+            for axis in "xyz":
+                out[axis] = df[f"{column}.{axis}"] * scale
+            out.to_csv(folder / file, index=False)
         n += 1
 
     print(f"Wrote {n} recordings to {OUT}/")
     for d in sorted(OUT.iterdir()):
-        print(f"  {d.name:<10} {len(list(d.glob('*.csv')))} recordings")
+        print(f"  {d.name:<10} {sum(p.is_dir() for p in d.iterdir())} recordings")
 
 
 if __name__ == "__main__":

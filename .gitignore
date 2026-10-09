@@ -7,3 +7,7 @@ demo_cnn.pt
 # Sensor Logger metadata includes the device ID
 **/Metadata.csv
 motionsense/
+
+# Trained models: run "train" to create them
+motion_model.joblib
+motion_cnn.pt
